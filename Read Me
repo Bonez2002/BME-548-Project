@@ -3,35 +3,35 @@ BME-548-Project/
 ├── Images/
 │   ├── Training Images/
 │   │   ├── All Data/
-│   │   │   └── Images/
+│   │   │   ├── Images/
 │   │   │   └── Masks/
 │   │   ├── High SNR/
-│   │   │   └── Images/
+│   │   │   ├── Images/
 │   │   │   └── Masks/
 │   │   ├── Low SNR/
-│   │   |   └── Images/
+│   │   |   ├── Images/
 │   │   |   └── Masks/
 │   │   └── Raw Data/
-│   │       └── BBBC024_v1_c00_lowSNR_images_TIFF
-│   │       └── BBBC024_v1_c00_highSNR_images_TIFF
-│   │       └── BBBC024_v1_c25_lowSNR_images_TIFF
-│   │       └── BBBC024_v1_c25_highSNR_images_TIFF
-│   │       └── BBBC024_v1_c50_lowSNR_images_TIFF
-│   │       └── BBBC024_v1_c50_highSNR_images_TIFF
-│   │       └── BBBC024_v1_c75_lowSNR_images_TIFF
+│   │       ├── BBBC024_v1_c00_lowSNR_images_TIFF
+│   │       ├── BBBC024_v1_c00_highSNR_images_TIFF
+│   │       ├── BBBC024_v1_c25_lowSNR_images_TIFF
+│   │       ├── BBBC024_v1_c25_highSNR_images_TIFF
+│   │       ├── BBBC024_v1_c50_lowSNR_images_TIFF
+│   │       ├── BBBC024_v1_c50_highSNR_images_TIFF
+│   │       ├── BBBC024_v1_c75_lowSNR_images_TIFF
 │   │       └── BBBC024_v1_c75_highSNR_images_TIFF
 │   └── Evaluation Images/
-│       └── Images
+│       ├── Images
 │       └── Masks
 ├── models/
-│   └── All_Great/
-│   └── All_Moderate/
-│   └── All_Poor/
-│   └── High_SNR_Great/
-│   └── High_SNR_Moderate/
-│   └── High_SNR_Poor/
-│   └── Low_SNR_Great/
-│   └── Low_SNR_Moderate/
+│   ├── All_Great/
+│   ├── All_Moderate/
+│   ├── All_Poor/
+│   ├── High_SNR_Great/
+│   ├── High_SNR_Moderate/
+│   ├── High_SNR_Poor/
+│   ├── Low_SNR_Great/
+│   ├── Low_SNR_Moderate/
 │   └── Low_SNR_Poor/
 └── Code/
 
