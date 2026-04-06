@@ -1,28 +1,5 @@
 This is the spot for all the code and images that were necessary for the project
 BME-548-Project/
-├── Images/
-│   ├── Training Images/
-│   │   ├── All Data/
-│   │   │   ├── Images/
-│   │   │   └── Masks/
-│   │   ├── High SNR/
-│   │   │   ├── Images/
-│   │   │   └── Masks/
-│   │   ├── Low SNR/
-│   │   |   ├── Images/
-│   │   |   └── Masks/
-│   │   └── Raw Data/
-│   │       ├── BBBC024_v1_c00_lowSNR_images_TIFF
-│   │       ├── BBBC024_v1_c00_highSNR_images_TIFF
-│   │       ├── BBBC024_v1_c25_lowSNR_images_TIFF
-│   │       ├── BBBC024_v1_c25_highSNR_images_TIFF
-│   │       ├── BBBC024_v1_c50_lowSNR_images_TIFF
-│   │       ├── BBBC024_v1_c50_highSNR_images_TIFF
-│   │       ├── BBBC024_v1_c75_lowSNR_images_TIFF
-│   │       └── BBBC024_v1_c75_highSNR_images_TIFF
-│   └── Evaluation Images/
-│       ├── Images
-│       └── Masks
 ├── models/
 │   ├── All_Great/
 │   ├── All_Moderate/
