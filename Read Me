@@ -12,6 +12,21 @@ BME-548-Project/
 │   └── Low_SNR_Poor/
 └── Code/
 
-The training images are the BBBC024 data set, where the evaluation images are the Simulated nuclei of HL60 cells stained with Hoechst
+The training images are the BBBC024 (https://bbbc.broadinstitute.org/BBBC024) data set,
+where the evaluation images are the Simulated nuclei of HL60 cells stained with Hoechst.
+https://celltrackingchallenge.net/3d-datasets/
 
 List of required pip installs for all the codes 
+
+# Core scientific / image / ML packages
+pip install numpy scipy matplotlib pandas tifffile tqdm psfmodels cellpose
+
+# PyTorch (CUDA version – recommended for your 3D U-Net training & inference)
+# Change "cu124" to your installed CUDA version (11.8, 12.1, 12.4, 12.6, etc.)
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+# If you want CPU-only PyTorch (no GPU)
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# For faster data loading/visualization (optional)
+pip install pillow imageio
