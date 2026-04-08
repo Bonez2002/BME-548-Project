@@ -1,4 +1,24 @@
-# train_3d_unet_gpu_optimized_cellpatch_full_with_threshold.py
+"""
+3D U-Net TRAINING PIPELINE — WITH THRESHOLD OPTIMIZATION + CALIBRATION
+=======================================================================
+
+This is the full training script for the "All_Great", "All_Moderate", etc.
+microscope-objective-specific 3D nuclei segmentation models.
+
+Key advanced features:
+- Smart patch sampling (75% cell-centered + edge-biased patches)
+- Focal Tversky loss (robust to class imbalance)
+- Automatic Mixed Precision (AMP) + channels_last_3d for maximum speed
+- Early stopping + best-model checkpointing
+- Post-training threshold sweep on validation patches
+- FULL-VOLUME threshold sweep using streaming sliding-window inference
+- Optional external calibration dataset (Fluo-N3DH-SIM+) for better threshold selection
+- Low-memory ROC + Precision-Recall curve analysis with AUCs
+- Anti-sleep to keep the PC running for days
+
+Trains 9 separate models (different PSF degradations + SNR levels).
+Saves best_model.pth, last_model.pth, threshold plots, and metrics in each model folder.
+"""
 
 import os
 import sys
@@ -21,122 +41,91 @@ from torch.utils.data import Dataset, DataLoader
 # ============================================================
 # CONFIG
 # ============================================================
-CONFIG = {
-    "cell_patch_ratio": 0.75,
-    "background_penalty_strength": 0.8,
 
+CONFIG = {
+    # Patch sampling strategy
+    "cell_patch_ratio": 0.75,                  # 75% of patches centered on nuclei
+    "background_penalty_strength": 0.8,        # (reserved for future use)
+
+    # Pretraining (transfer learning from All_Great model)
     "load_pretrained": True,
     "pretrained_model_path": r"S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Modified Models/All_Great/best_model.pth",
 
+    # ===================================================================
+    # DATASETS — Each entry trains one model
+    # ===================================================================
+    # Naming convention:
+    #   All_       = mixed SNR (all qualities)
+    #   HighSNR_   = high signal-to-noise ratio only
+    #   LowSNR_    = low signal-to-noise ratio only
+    #   _Great     = Great objective (best PSF)
+    #   _Moderate  = Moderate objective
+    #   _Poor      = Poor objective (worst PSF)
     "datasets": [
-        {
-            "name": "All_Great",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Great/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Great/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
-        {
-            "name": "All_Moderate",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Moderate/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Moderate/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
-        {
-            "name": "All_Poor",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Poor/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Poor/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
-        {
-            "name": "HighSNR_Great",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Great/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Great/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
-        {
-            "name": "HighSNR_Moderate",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Moderate/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Moderate/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
-        {
-            "name": "HighSNR_Poor",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Poor/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Poor/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
-        {
-            "name": "LowSNR_Great",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Great/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Great/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
-        {
-            "name": "LowSNR_Moderate",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Moderate/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Moderate/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
-        {
-            "name": "LowSNR_Poor",
-            "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Poor/images",
-            "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Poor/masks",
-            "val_images_dir": "",
-            "val_masks_dir": ""
-        },
+        {"name": "All_Great",        "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Great/images",       
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Great/masks"},
+        {"name": "All_Moderate",     "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Moderate/images",     
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Moderate/masks"},
+        {"name": "All_Poor",         "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Poor/images",         
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/All_Poor/masks"},
+
+        {"name": "HighSNR_Great",    "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Great/images",    
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Great/masks"},
+        {"name": "HighSNR_Moderate", "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Moderate/images", 
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Moderate/masks"},
+        {"name": "HighSNR_Poor",     "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Poor/images",     
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/HighSNR_Poor/masks"},
+
+        {"name": "LowSNR_Great",     "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Great/images",     
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Great/masks"},
+        {"name": "LowSNR_Moderate",  "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Moderate/images",  
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Moderate/masks"},
+        {"name": "LowSNR_Poor",      "train_images_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Poor/images",     
+                                     "train_masks_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Images/LowSNR_Poor/masks"},
     ],
 
     "output_root_dir": "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Modified Models",
 
-    "val_fraction": 0.2,
+    # Data split & reproducibility
+    "val_fraction": 0.2,        # 20% of images used for validation (automatic split)
     "random_seed": 15,
 
+    # Model & training settings
     "base_filters": 12,
-
     "epochs": 512,
     "batch_size": 16,
-    "patch_size": 128,  
+    "patch_size": 128,
     "patches_per_volume": 8,
     "lr": 5e-4,
 
     "early_stopping_patience": 64,
     "early_stopping_min_delta": 1e-4,
 
+    # DataLoader settings
     "num_workers": 1,
     "persistent_workers": True,
     "prefetch_factor": 1,
     "pin_memory": True,
-
     "use_amp": True,
 
-    # NEW
+    # Threshold optimization
     "threshold_steps": 50,
 
-    # ============================
-    # CALIBRATION (ADDED)
-    # ============================
+    # External calibration dataset (Fluo-N3DH-SIM+)
     "calibration_images_dir": "D:/Downloads/Fluo-N3DH-SIM+/Fluo-N3DH-SIM+/01",
     "calibration_masks_dir": "D:/Downloads/Fluo-N3DH-SIM+/Fluo-N3DH-SIM+/01_GT/TRA",
     "num_calibration_samples": 25,
     "use_calibration_for_threshold": True,
     "calibration_weight": 1.0,
-    # ============================
 }
 
 
 # ============================================================
-# SEED
+# REPRODUCIBILITY
 # ============================================================
 
 def set_seed(seed):
+    """Set all random seeds for perfect reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -145,20 +134,26 @@ def set_seed(seed):
 
 set_seed(CONFIG["random_seed"])
 
+
 # ============================================================
-# SAFE TIFF LOADER
+# TIFF I/O HELPERS
 # ============================================================
 
 def safe_read_tiff(path):
+    """Memory-map when possible (fast for huge 3D stacks), fall back to normal read."""
     try:
         return tifffile.memmap(path)
     except Exception:
         return tifffile.imread(path)
 
+
 def normalize_volume(img):
+    """
+    1st–99th percentile normalization (identical to inference pipeline).
+    Safely handles constant or near-constant volumes.
+    """
     img = img.astype(np.float32)
 
-    # handle constant images safely
     if img.max() == img.min():
         return np.zeros_like(img, dtype=np.float32)
 
@@ -172,11 +167,13 @@ def normalize_volume(img):
 
     return img.astype(np.float32)
 
+
 # ============================================================
-# LOAD MODEL WEIGHTS
+# MODEL LOADING
 # ============================================================
 
 def load_model_weights(model, path):
+    """Load pretrained weights (strict=False allows partial loading)."""
     if not path:
         print("WARNING: pretrained_model_path is empty")
         return
@@ -195,6 +192,10 @@ def load_model_weights(model, path):
 # ============================================================
 
 class AntiSleep:
+    """
+    Prevents the computer from sleeping during multi-day training runs.
+    Works on Windows, macOS, and Linux.
+    """
     def __init__(self):
         self.proc = None
         atexit.register(self.stop)
@@ -204,7 +205,7 @@ class AntiSleep:
             if sys.platform.startswith("win"):
                 import ctypes
                 ctypes.windll.kernel32.SetThreadExecutionState(
-                    0x80000000 | 0x00000001
+                    0x80000000 | 0x00000001 | 0x00000002
                 )
                 print("Anti-sleep enabled (Windows)")
             elif sys.platform == "darwin":
@@ -225,10 +226,11 @@ class AntiSleep:
 
 
 # ============================================================
-# MODEL
+# 3D U-Net ARCHITECTURE
 # ============================================================
 
 class DoubleConv(nn.Module):
+    """Two 3×3×3 convolutions with InstanceNorm + ReLU."""
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.seq = nn.Sequential(
@@ -245,18 +247,17 @@ class DoubleConv(nn.Module):
 
 
 class Down(nn.Module):
+    """MaxPool3d + DoubleConv (encoder block)."""
     def __init__(self, in_ch, out_ch):
         super().__init__()
-        self.seq = nn.Sequential(
-            nn.MaxPool3d(2),
-            DoubleConv(in_ch, out_ch),
-        )
+        self.seq = nn.Sequential(nn.MaxPool3d(2), DoubleConv(in_ch, out_ch))
 
     def forward(self, x):
         return self.seq(x)
 
 
 class Up(nn.Module):
+    """TransposeConv + skip connection + DoubleConv (decoder block)."""
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.up = nn.ConvTranspose3d(in_ch // 2, in_ch // 2, kernel_size=2, stride=2)
@@ -269,34 +270,35 @@ class Up(nn.Module):
         diff_y = x2.size(3) - x1.size(3)
         diff_x = x2.size(4) - x1.size(4)
 
-        x1 = F.pad(
-            x1,
-            (
-                diff_x // 2, diff_x - diff_x // 2,
-                diff_y // 2, diff_y - diff_y // 2,
-                diff_z // 2, diff_z - diff_z // 2,
-            ),
-        )
+        x1 = F.pad(x1, (
+            diff_x // 2, diff_x - diff_x // 2,
+            diff_y // 2, diff_y - diff_y // 2,
+            diff_z // 2, diff_z - diff_z // 2,
+        ))
 
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
 
 class UNet3D(nn.Module):
+    """
+    Lightweight 3D U-Net (base_filters=12).
+    Designed for 128³ patches on consumer GPUs.
+    """
     def __init__(self, in_ch, base):
         super().__init__()
-        self.inc = DoubleConv(in_ch, base)
-        self.down1 = Down(base, base * 2)
-        self.down2 = Down(base * 2, base * 4)
-        self.down3 = Down(base * 4, base * 8)
-        self.down4 = Down(base * 8, base * 8)
+        self.inc   = DoubleConv(in_ch, base)
+        self.down1 = Down(base,      base * 2)
+        self.down2 = Down(base * 2,  base * 4)
+        self.down3 = Down(base * 4,  base * 8)
+        self.down4 = Down(base * 8,  base * 8)
 
-        self.up1 = Up(base * 16, base * 4)
-        self.up2 = Up(base * 8, base * 2)
-        self.up3 = Up(base * 4, base)
-        self.up4 = Up(base * 2, base)
+        self.up1   = Up(base * 16,   base * 4)
+        self.up2   = Up(base * 8,    base * 2)
+        self.up3   = Up(base * 4,    base)
+        self.up4   = Up(base * 2,    base)
 
-        self.outc = nn.Conv3d(base, 1, kernel_size=1)
+        self.outc  = nn.Conv3d(base, 1, kernel_size=1)
 
     def forward(self, x):
         x1 = self.inc(x)
@@ -306,18 +308,22 @@ class UNet3D(nn.Module):
         x5 = self.down4(x4)
 
         x = self.up1(x5, x4)
-        x = self.up2(x, x3)
-        x = self.up3(x, x2)
-        x = self.up4(x, x1)
+        x = self.up2(x,  x3)
+        x = self.up3(x,  x2)
+        x = self.up4(x,  x1)
 
         return self.outc(x)
 
 
 # ============================================================
-# BETTER LOSS: FOCAL TVERSKY (DROP-IN REPLACEMENT)
+# LOSS FUNCTION
 # ============================================================
 
 class FocalTverskyLoss(nn.Module):
+    """
+    Focal Tversky Loss — excellent for highly imbalanced 3D nuclei segmentation.
+    Drop-in replacement for BCE / Dice.
+    """
     def __init__(self, alpha=0.5, beta=0.5, gamma=0.75):
         super().__init__()
         self.alpha = alpha
@@ -334,18 +340,23 @@ class FocalTverskyLoss(nn.Module):
         FP = (probs * (1 - target)).sum(dims)
         FN = ((1 - probs) * target).sum(dims)
 
-        tversky = (TP + 1e-6) / (
-            TP + self.alpha * FN + self.beta * FP + 1e-6
-        )
+        tversky = (TP + 1e-6) / (TP + self.alpha * FN + self.beta * FP + 1e-6)
 
         return ((1 - tversky) ** self.gamma).mean()
 
 
 # ============================================================
-# DATASET
+# DATASET WITH SMART PATCH SAMPLING
 # ============================================================
 
 class PatchDataset(Dataset):
+    """
+    On-the-fly 3D patch extractor with intelligent sampling:
+    - 75% of patches are cell-centered (high signal)
+    - 25% are edge-biased (boundary learning)
+    - Caching for repeated volumes
+    - On-the-fly augmentation
+    """
     def __init__(self, imgs, masks, patch_size, patches_per_volume, cell_patch_ratio):
         self.imgs = imgs
         self.masks = masks
@@ -367,13 +378,11 @@ class PatchDataset(Dataset):
         mask = safe_read_tiff(self.masks[idx])
 
         img = normalize_volume(img)
-
         mask = (mask > 0)
 
-        # 🔥 PRECOMPUTE ONCE
+        # Precompute cell coordinates and edge coordinates once
         coords = np.argwhere(mask)
-
-        edge = np.logical_xor(mask, np.pad(mask, 1)[1:-1,1:-1,1:-1])
+        edge = np.logical_xor(mask, np.pad(mask, 1)[1:-1, 1:-1, 1:-1])
         edge_coords = np.argwhere(edge)
 
         if img.ndim == 3:
@@ -382,18 +391,21 @@ class PatchDataset(Dataset):
         self.cache[idx] = (img, mask, coords, edge_coords)
         return self.cache[idx]
 
-    def get_random_start(self, size, patch):
+    @staticmethod
+    def get_random_start(size, patch):
         if size <= patch:
             return 0
         return random.randint(0, size - patch)
 
-    def get_cell_center(self, mask):
+    @staticmethod
+    def get_cell_center(mask):
         coords = np.argwhere(mask)
         if len(coords) == 0:
             return None
         return coords[np.random.randint(0, len(coords))]
 
-    def get_cell_patch_start(self, center, shape, patch):
+    @staticmethod
+    def get_cell_patch_start(center, shape, patch):
         zc, yc, xc = int(center[0]), int(center[1]), int(center[2])
         z_max = max(0, shape[0] - patch)
         y_max = max(0, shape[1] - patch)
@@ -402,7 +414,6 @@ class PatchDataset(Dataset):
         z = min(max(zc - patch // 2, 0), z_max)
         y = min(max(yc - patch // 2, 0), y_max)
         x = min(max(xc - patch // 2, 0), x_max)
-
         return z, y, x
 
     def __getitem__(self, idx):
@@ -412,32 +423,20 @@ class PatchDataset(Dataset):
         _, z_dim, y_dim, x_dim = img.shape
         p = self.patch_size
 
-        # ============================================================
-        # SMART SAMPLING (CELLS + EDGES)
-        # ============================================================
-
         use_cell_patch = (random.random() < self.cell_patch_ratio)
 
         if use_cell_patch:
             center = self.get_cell_center(mask)
         else:
-            # bias toward edges instead of empty space
-            edge = np.logical_xor(mask, np.pad(mask, 1)[1:-1,1:-1,1:-1])
+            # Bias toward edges (hard examples)
             coords = edge_coords
-
             if len(coords) > 0:
                 center = coords[np.random.randint(0, len(coords))]
             else:
                 center = None
 
-        if use_cell_patch:
-            center = coords[np.random.randint(0, len(coords))] if len(coords) > 0 else None
-            if center is not None:
-                z, y, x = self.get_cell_patch_start(center, mask.shape, p)
-            else:
-                z = self.get_random_start(z_dim, p)
-                y = self.get_random_start(y_dim, p)
-                x = self.get_random_start(x_dim, p)
+        if use_cell_patch and center is not None:
+            z, y, x = self.get_cell_patch_start(center, mask.shape, p)
         else:
             z = self.get_random_start(z_dim, p)
             y = self.get_random_start(y_dim, p)
@@ -451,20 +450,22 @@ class PatchDataset(Dataset):
 
         img_patch, mask_patch = augment_3d(img_patch, mask_patch)
 
-        # 🔥 FIX: force contiguous memory
+        # Ensure contiguous memory for fast GPU transfer
         img_patch = np.ascontiguousarray(img_patch)
         mask_patch = np.ascontiguousarray(mask_patch)
 
         return (
             torch.from_numpy(img_patch),
             torch.from_numpy(mask_patch[None]),
-)
+        )
+
 
 # ============================================================
-# CALIBRATION HELPERS (ADDED)
+# CALIBRATION DATA LOADER
 # ============================================================
 
 def load_calibration_data():
+    """Load a random subset of the external calibration dataset (Fluo-N3DH-SIM+)."""
     if not CONFIG.get("use_calibration_for_threshold", False):
         return [], []
 
@@ -491,49 +492,16 @@ def load_calibration_data():
     imgs = [imgs[i] for i in idxs]
     masks = [masks[i] for i in idxs]
 
-    print(f"Using {len(imgs)} calibration samples")
-
+    print(f"Using {len(imgs)} calibration samples for threshold optimization")
     return imgs, masks
 
 
-def compute_probs_for_dataset(model, img_paths, mask_paths):
-    probs_list = []
-    targets_list = []
-
-    for img_path, mask_path in tqdm(
-        list(zip(img_paths, mask_paths)),
-        total=len(img_paths),
-        desc="Calibration inference"
-    ):
-        img = safe_read_tiff(img_path)
-        img = normalize_volume(img)
-
-        mask = safe_read_tiff(mask_path)
-
-        mask = (mask > 0).astype(np.float32)
-
-        if img.ndim == 3:
-            img = img[None]
-
-        img = torch.from_numpy(img.astype(np.float32))
-
-        probs = sliding_window_inference(
-            model,
-            img,
-            CONFIG["patch_size"],
-            device
-        )
-
-        probs_list.append(probs.cpu())
-        targets_list.append(torch.from_numpy(mask[None]))
-
-    return probs_list, targets_list
-
 # ============================================================
-# SOFT DICE (NO THRESHOLD BIAS)
+# SOFT DICE (for monitoring)
 # ============================================================
 
 def dice_soft(logits, target):
+    """Soft Dice (no hard threshold) — used only for quick monitoring."""
     probs = torch.sigmoid(logits)
     target = (target > 0.5).float()
 
@@ -544,10 +512,11 @@ def dice_soft(logits, target):
 
 
 # ============================================================
-# NEW: THRESHOLD UTILITIES
+# THRESHOLD OPTIMIZATION UTILITIES
 # ============================================================
 
 def dice_at_threshold(probs, target, thresh):
+    """Compute Dice at a specific hard threshold."""
     pred = (probs > thresh).float()
     target = (target > 0.5).float()
 
@@ -558,7 +527,8 @@ def dice_at_threshold(probs, target, thresh):
 
 
 def find_best_threshold(model, val_loader, out_dir):
-    print("\nRunning threshold sweep...")
+    """Patch-based threshold sweep (fast, low memory)."""
+    print("\nRunning patch-based threshold sweep...")
 
     model.eval()
 
@@ -595,32 +565,36 @@ def find_best_threshold(model, val_loader, out_dir):
     best_idx = int(np.argmax(dice_scores))
     best_thresh = thresholds[best_idx]
 
-    # save plot
+    # Save plot
     plt.figure()
     plt.plot(thresholds, dice_scores)
     plt.xlabel("Threshold")
     plt.ylabel("Dice")
-    plt.title("Threshold vs Dice")
+    plt.title("Threshold vs Dice (patch-based)")
     plt.grid(True)
     plt.savefig(os.path.join(out_dir, "threshold_vs_dice.png"))
     plt.close()
 
-    # save threshold
     with open(os.path.join(out_dir, "best_threshold.txt"), "w") as f:
         f.write(str(best_thresh))
 
-    print(f"Best threshold: {best_thresh:.4f}")
+    print(f"Best patch-based threshold: {best_thresh:.4f}")
+
 
 # ============================================================
-# NEW: FULL-VOLUME INFERENCE + THRESHOLD SWEEP (ADDED ONLY)
+# FULL-VOLUME INFERENCE (streaming sliding window)
 # ============================================================
 
 def sliding_window_inference(model, volume, patch_size, device):
+    """
+    Full-volume probability map using overlapping patches.
+    Used only during post-training threshold search (not during training).
+    """
     model.eval()
 
     _, Z, Y, X = volume.shape
     p = patch_size
-    stride = p // 2  # overlap for smoother stitching
+    stride = p // 2
 
     output = torch.zeros((1, Z, Y, X), dtype=torch.float32, device=device)
     count_map = torch.zeros_like(output)
@@ -629,7 +603,6 @@ def sliding_window_inference(model, volume, patch_size, device):
         for z in range(0, Z, stride):
             for y in range(0, Y, stride):
                 for x in range(0, X, stride):
-
                     z0 = min(z, Z - p)
                     y0 = min(y, Y - p)
                     x0 = min(x, X - p)
@@ -649,8 +622,13 @@ def sliding_window_inference(model, volume, patch_size, device):
     output /= count_map.clamp(min=1)
     return output
 
+
 def find_best_threshold_full(model, val_imgs, val_masks, out_dir):
-    print("\nRunning FULL-VOLUME threshold sweep (STREAMING + CALIBRATION)...")
+    """
+    Full-volume threshold sweep that also incorporates the external
+    calibration dataset. Uses streaming inference (no full volumes stored in RAM).
+    """
+    print("\nRunning FULL-VOLUME threshold sweep (streaming + calibration)...")
 
     model.eval()
 
@@ -660,24 +638,14 @@ def find_best_threshold_full(model, val_imgs, val_masks, out_dir):
     val_weight = float(1.0 - CONFIG["calibration_weight"])
     cal_weight = float(CONFIG["calibration_weight"])
 
-    # ----------------------------------------
-    # LOAD CALIBRATION PATHS (NOT DATA)
-    # ----------------------------------------
     cal_imgs, cal_masks = load_calibration_data()
 
     val_count = 0
     cal_count = 0
 
     with torch.no_grad():
-
-        # ======================================
-        # VALIDATION LOOP
-        # ======================================
-        for img_path, mask_path in tqdm(
-            list(zip(val_imgs, val_masks)),
-            total=len(val_imgs),
-            desc="Validation sweep"
-        ):
+        # Validation volumes
+        for img_path, mask_path in tqdm(list(zip(val_imgs, val_masks)), total=len(val_imgs), desc="Validation sweep"):
             img = normalize_volume(safe_read_tiff(img_path))
             mask = (safe_read_tiff(mask_path) > 0).astype(np.float32)
 
@@ -686,43 +654,29 @@ def find_best_threshold_full(model, val_imgs, val_masks, out_dir):
 
             img = torch.from_numpy(img.astype(np.float32))
 
-            probs = sliding_window_inference(
-                model,
-                img,
-                CONFIG["patch_size"],
-                device
-            ).cpu()
+            probs = sliding_window_inference(model, img, CONFIG["patch_size"], device).cpu()
 
             target = torch.from_numpy(mask[None])
 
-            # downsample (optional but recommended)
+            # Optional downsampling for speed (still accurate enough)
             probs = probs[:, ::2, ::2, ::2]
             target = target[:, ::2, ::2, ::2]
 
             for i, t in enumerate(thresholds):
                 pred = (probs > t).float()
-
                 inter = (pred * target).sum()
                 denom = pred.sum() + target.sum()
-
                 dice = (2.0 * inter + 1e-6) / (denom + 1e-6)
                 dice_scores[i] += val_weight * dice.item()
 
             val_count += 1
-
             del probs, target, pred
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
-        # ======================================
-        # CALIBRATION LOOP (SEPARATE PASS)
-        # ======================================
+        # Calibration volumes (if enabled)
         if len(cal_imgs) > 0:
-            for img_path, mask_path in tqdm(
-                list(zip(cal_imgs, cal_masks)),
-                total=len(cal_imgs),
-                desc="Calibration sweep"
-            ):
+            for img_path, mask_path in tqdm(list(zip(cal_imgs, cal_masks)), total=len(cal_imgs), desc="Calibration sweep"):
                 img = normalize_volume(safe_read_tiff(img_path))
                 mask = (safe_read_tiff(mask_path) > 0).astype(np.float32)
 
@@ -731,12 +685,7 @@ def find_best_threshold_full(model, val_imgs, val_masks, out_dir):
 
                 img = torch.from_numpy(img.astype(np.float32))
 
-                probs = sliding_window_inference(
-                    model,
-                    img,
-                    CONFIG["patch_size"],
-                    device
-                ).cpu()
+                probs = sliding_window_inference(model, img, CONFIG["patch_size"], device).cpu()
 
                 target = torch.from_numpy(mask[None])
 
@@ -745,22 +694,17 @@ def find_best_threshold_full(model, val_imgs, val_masks, out_dir):
 
                 for i, t in enumerate(thresholds):
                     pred = (probs > t).float()
-
                     inter = (pred * target).sum()
                     denom = pred.sum() + target.sum()
-
                     dice = (2.0 * inter + 1e-6) / (denom + 1e-6)
                     dice_scores[i] += cal_weight * dice.item()
 
                 cal_count += 1
-
                 del probs, target, pred
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
 
-    # ----------------------------------------
-    # CONVERT SUM TO WEIGHTED MEAN
-    # ----------------------------------------
+    # Convert accumulated sum → weighted mean
     normalizer = 0.0
     if val_count > 0:
         normalizer += val_weight * val_count
@@ -784,35 +728,31 @@ def find_best_threshold_full(model, val_imgs, val_masks, out_dir):
     with open(os.path.join(out_dir, "best_threshold_combined_stream.txt"), "w") as f:
         f.write(str(best_thresh))
 
-    print(f"Best COMBINED threshold: {best_thresh:.4f}")
+    print(f"Best COMBINED full-volume threshold: {best_thresh:.4f}")
+
 
 # ============================================================
-# NEW: ROC + PRECISION-RECALL ANALYSIS (FULL VOLUME)
+# ROC + PRECISION-RECALL ANALYSIS (low memory)
 # ============================================================
 
 def compute_roc_pr_full_lowmem(model, val_imgs, val_masks, out_dir, num_bins=512):
+    """
+    Low-memory ROC / PR curve computation using histograms.
+    No full probability maps are stored — perfect for huge volumes.
+    """
     print("\nRunning ROC + PR analysis (LOW MEMORY)...")
 
     model.eval()
 
-    # histogram bins
     bin_edges = np.linspace(0.0, 1.0, num_bins + 1)
     tp_hist = np.zeros(num_bins, dtype=np.float64)
     fp_hist = np.zeros(num_bins, dtype=np.float64)
 
-    # --------------------------------------------------------
-    # STREAM THROUGH VOLUMES (NO STORAGE)
-    # --------------------------------------------------------
-    for img_path, mask_path in tqdm(
-        list(zip(val_imgs, val_masks)),
-        total=len(val_imgs),
-        desc="Streaming inference (ROC/PR)"
-    ):
+    for img_path, mask_path in tqdm(list(zip(val_imgs, val_masks)), total=len(val_imgs), desc="Streaming inference (ROC/PR)"):
         img = safe_read_tiff(img_path)
         img = normalize_volume(img)
 
         mask = safe_read_tiff(mask_path)
-
         mask = (mask > 0).astype(np.uint8)
 
         if img.ndim == 3:
@@ -820,39 +760,21 @@ def compute_roc_pr_full_lowmem(model, val_imgs, val_masks, out_dir, num_bins=512
 
         img = torch.from_numpy(img.astype(np.float32))
 
-        probs = sliding_window_inference(
-            model,
-            img,
-            CONFIG["patch_size"],
-            device
-        ).cpu().numpy()
+        probs = sliding_window_inference(model, img, CONFIG["patch_size"], device).cpu().numpy()
 
         probs = probs.astype(np.float32).ravel()
         mask = mask.astype(np.float32).ravel()
 
-        # bin indices
         inds = np.clip(
             np.searchsorted(bin_edges, probs, side="right") - 1,
             0,
             num_bins - 1
         ).astype(np.int32)
 
-        # accumulate histograms
-        tp_hist += np.bincount(
-            inds,
-            weights=mask,
-            minlength=num_bins
-        )
+        tp_hist += np.bincount(inds, weights=mask, minlength=num_bins)
+        fp_hist += np.bincount(inds, weights=(1 - mask), minlength=num_bins)
 
-        fp_hist += np.bincount(
-            inds,
-            weights=(1 - mask),
-            minlength=num_bins
-        )
-
-    # --------------------------------------------------------
-    # CUMULATIVE SUM (HIGH → LOW threshold)
-    # --------------------------------------------------------
+    # Cumulative from high → low threshold
     tp_cum = np.cumsum(tp_hist[::-1])
     fp_cum = np.cumsum(fp_hist[::-1])
 
@@ -865,33 +787,24 @@ def compute_roc_pr_full_lowmem(model, val_imgs, val_masks, out_dir, num_bins=512
     precision = tp_cum / (tp_cum + fp_cum + 1e-8)
     recall = tpr
 
-    # --------------------------------------------------------
-    # AUC
-    # --------------------------------------------------------
+    # AUCs
     roc_auc = np.trapezoid(tpr, fpr)
-    # sort by recall (required for correct AUC)
+
     order = np.argsort(recall)
     recall_sorted = recall[order]
     precision_sorted = precision[order]
-
     pr_auc = np.trapezoid(precision_sorted, recall_sorted)
 
-    # --------------------------------------------------------
-    # BEST THRESHOLDS
-    # --------------------------------------------------------
     thresholds = bin_edges[:-1][::-1]
 
-    # ROC (Youden J)
+    # Best thresholds
     j_scores = tpr - fpr
     best_roc_thresh = thresholds[np.argmax(j_scores)]
 
-    # PR (F1)
     f1 = 2 * precision * recall / (precision + recall + 1e-8)
     best_pr_thresh = thresholds[np.argmax(f1)]
 
-    # --------------------------------------------------------
-    # PLOTS
-    # --------------------------------------------------------
+    # Plots
     plt.figure()
     plt.plot(fpr, tpr)
     plt.xlabel("False Positive Rate")
@@ -910,26 +823,22 @@ def compute_roc_pr_full_lowmem(model, val_imgs, val_masks, out_dir, num_bins=512
     plt.savefig(os.path.join(out_dir, "pr_curve_lowmem.png"))
     plt.close()
 
-    # --------------------------------------------------------
-    # SAVE
-    # --------------------------------------------------------
     with open(os.path.join(out_dir, "roc_pr_metrics_lowmem.txt"), "w") as f:
         f.write(f"ROC AUC: {roc_auc:.6f}\n")
         f.write(f"PR AUC: {pr_auc:.6f}\n")
         f.write(f"Best ROC threshold: {best_roc_thresh:.6f}\n")
         f.write(f"Best PR threshold (F1): {best_pr_thresh:.6f}\n")
 
-    print(f"ROC AUC: {roc_auc:.4f}")
-    print(f"PR AUC: {pr_auc:.4f}")
-    print(f"Best ROC threshold: {best_roc_thresh:.4f}")
-    print(f"Best PR threshold: {best_pr_thresh:.4f}")
+    print(f"ROC AUC: {roc_auc:.4f} | PR AUC: {pr_auc:.4f}")
+    print(f"Best ROC thresh: {best_roc_thresh:.4f} | Best PR thresh: {best_pr_thresh:.4f}")
 
 
 # ============================================================
-# TRAIN
+# TRAINING LOOP
 # ============================================================
 
 def train_dataset(ds):
+    """Train one complete model (one PSF regime)."""
     print(f"\n===== Training {ds['name']} =====")
 
     out_dir = os.path.join(CONFIG["output_root_dir"], ds["name"])
@@ -938,31 +847,21 @@ def train_dataset(ds):
     imgs = sorted(glob(os.path.join(ds["train_images_dir"], "*.tif")))
     masks = sorted(glob(os.path.join(ds["train_masks_dir"], "*.tif")))
 
-    if len(imgs) == 0:
-        print(f"WARNING: no images found for {ds['name']}")
-        return
-    if len(masks) == 0:
-        print(f"WARNING: no masks found for {ds['name']}")
+    if len(imgs) == 0 or len(masks) == 0:
+        print(f"WARNING: no data found for {ds['name']}")
         return
     if len(imgs) != len(masks):
-        raise RuntimeError(
-            f"Image/mask count mismatch for {ds['name']}: "
-            f"{len(imgs)} images vs {len(masks)} masks"
-        )
+        raise RuntimeError(f"Image/mask count mismatch for {ds['name']}")
 
+    # Train/val split
     split = max(1, int(len(imgs) * CONFIG["val_fraction"]))
-
-    val_imgs = imgs[:split]
-    val_masks = masks[:split]
-    train_imgs = imgs[split:]
-    train_masks = masks[split:]
+    val_imgs, val_masks = imgs[:split], masks[:split]
+    train_imgs, train_masks = imgs[split:], masks[split:]
 
     if len(train_imgs) == 0:
-        raise RuntimeError(
-            f"No training images remain after split for {ds['name']}. "
-            f"Need more files or lower val_fraction."
-        )
+        raise RuntimeError(f"No training images remain for {ds['name']}")
 
+    # Determine input channels
     sample = tifffile.imread(train_imgs[0])
     in_ch = 1 if sample.ndim == 3 else sample.shape[0] if sample.shape[0] <= 4 else sample.shape[-1]
 
@@ -974,19 +873,13 @@ def train_dataset(ds):
         load_model_weights(model, CONFIG["pretrained_model_path"])
 
     train_dataset_obj = PatchDataset(
-        train_imgs,
-        train_masks,
-        CONFIG["patch_size"],
-        CONFIG["patches_per_volume"],
-        CONFIG["cell_patch_ratio"],
+        train_imgs, train_masks,
+        CONFIG["patch_size"], CONFIG["patches_per_volume"], CONFIG["cell_patch_ratio"]
     )
 
     val_dataset_obj = PatchDataset(
-        val_imgs,
-        val_masks,
-        CONFIG["patch_size"],
-        6,  # more coverage
-        CONFIG["cell_patch_ratio"],
+        val_imgs, val_masks,
+        CONFIG["patch_size"], 6, CONFIG["cell_patch_ratio"]   # more patches for validation
     )
 
     train_loader = DataLoader(
@@ -1009,9 +902,7 @@ def train_dataset(ds):
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=CONFIG["lr"])
-    loss_fn = nn.BCEWithLogitsLoss(
-    pos_weight=torch.tensor([8.0], device=device)
-    )
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([8.0], device=device))
 
     scaler = torch.amp.GradScaler("cuda") if (CONFIG["use_amp"] and device.type == "cuda") else None
 
@@ -1052,15 +943,13 @@ def train_dataset(ds):
 
         train_loss = running_loss / max(1, len(train_loader))
 
+        # Quick validation Dice (full-volume, fixed threshold 0.2 for monitoring)
         model.eval()
         val_dices = []
-
         with torch.no_grad():
             for img_path, mask_path in zip(val_imgs, val_masks):
-
                 img = safe_read_tiff(img_path)
                 img = normalize_volume(img)
-
                 mask = safe_read_tiff(mask_path)
 
                 if img.ndim == 3:
@@ -1068,45 +957,32 @@ def train_dataset(ds):
 
                 img = torch.from_numpy(img.astype(np.float32))
 
-                probs = sliding_window_inference(
-                    model,
-                    img,
-                    CONFIG["patch_size"],
-                    device
-                )
+                probs = sliding_window_inference(model, img, CONFIG["patch_size"], device)
 
-                # 🔥 LOWER THRESHOLD (VERY IMPORTANT)
                 pred = (probs > 0.2).float()
                 target = torch.from_numpy((mask > 0)[None].astype(np.float32)).to(device)
 
                 inter = (pred * target).sum()
                 denom = pred.sum() + target.sum()
-
                 dice = (2 * inter + 1e-6) / (denom + 1e-6)
                 val_dices.append(dice.item())
 
-                # DEBUG (once)
-                print(
-                    f"[DEBUG] prob mean={probs.mean().item():.4f}, "
-                    f"max={probs.max().item():.4f}"
-                )
-                break  # only print once
+                # Debug print once per epoch
+                print(f"[DEBUG] prob mean={probs.mean().item():.4f}, max={probs.max().item():.4f}")
+                break  # only once
 
         val_dice = float(np.mean(val_dices))
 
         if device.type == "cuda":
             used_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
             reserved_mb = torch.cuda.max_memory_reserved(device) / (1024 ** 2)
-            print(
-                f"Train Loss: {train_loss:.4f} | "
-                f"Val Dice: {val_dice:.4f} | "
-                f"Max GPU Alloc: {used_mb:.1f} MB | "
-                f"Max GPU Reserved: {reserved_mb:.1f} MB"
-            )
+            print(f"Train Loss: {train_loss:.4f} | Val Dice: {val_dice:.4f} | "
+                  f"Max GPU Alloc: {used_mb:.1f} MB | Reserved: {reserved_mb:.1f} MB")
             torch.cuda.reset_peak_memory_stats(device)
         else:
             print(f"Train Loss: {train_loss:.4f} | Val Dice: {val_dice:.4f}")
 
+        # Early stopping + checkpoint
         if val_dice > best_val + CONFIG["early_stopping_min_delta"]:
             best_val = val_dice
             no_improve = 0
@@ -1122,24 +998,26 @@ def train_dataset(ds):
             print("Early stopping triggered")
             break
 
-    print(f"Finished: {ds['name']}")
-    print(f"Best Val Dice: {best_val:.4f}")
+    print(f"Finished training {ds['name']} — Best Val Dice: {best_val:.4f}")
 
     # ========================================================
-    # NEW: THRESHOLD SEARCH (ADDED ONLY)
+    # POST-TRAINING THRESHOLD OPTIMIZATION & ANALYSIS
     # ========================================================
-
+    print("\n=== Running post-training threshold & ROC analysis ===")
     model.load_state_dict(torch.load(os.path.join(out_dir, "best_model.pth"), map_location=device))
+
     find_best_threshold(model, val_loader, out_dir)
     find_best_threshold_full(model, val_imgs, val_masks, out_dir)
     compute_roc_pr_full_lowmem(model, val_imgs, val_masks, out_dir)
 
+
 # ============================================================
-# AUGMENTATION (FAST + LOW RAM)
+# 3D AUGMENTATION (fast, in-place style)
 # ============================================================
 
 def augment_3d(img, mask):
-    # Random flips
+    """Random flips, intensity scaling, and light noise — applied on-the-fly."""
+    # Random axis flips
     if random.random() < 0.5:
         img = img[:, ::-1]
         mask = mask[::-1]
@@ -1150,13 +1028,13 @@ def augment_3d(img, mask):
         img = img[:, :, :, ::-1]
         mask = mask[:, :, ::-1]
 
-    # Random intensity scaling
+    # Random intensity jitter
     if random.random() < 0.5:
         scale = 0.9 + 0.2 * random.random()
         shift = 0.1 * (random.random() - 0.5)
         img = img * scale + shift
 
-    # Noise
+    # Light Gaussian noise
     if random.random() < 0.3:
         noise = np.random.normal(0, 0.02, size=img.shape).astype(np.float32)
         img = img + noise
@@ -1172,27 +1050,20 @@ if __name__ == "__main__":
     anti = AntiSleep()
     anti.start()
 
-    # ============================================================
-    # DEVICE
-    # ============================================================
-
+    # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print("\n==============================")
-    print("Device Information")
-    print("==============================")
+    print("\n" + "="*50)
+    print("DEVICE INFORMATION")
+    print("="*50)
     if device.type == "cuda":
         print("Using CUDA")
         print("GPU:", torch.cuda.get_device_name(0))
-        print(
-            "Total Memory:",
-            round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2),
-            "GB",
-        )
+        print("Total Memory:", round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2), "GB")
         torch.backends.cudnn.benchmark = True
     else:
         print("Using CPU")
-    print("==============================\n")
+    print("="*50 + "\n")
 
     try:
         for ds in CONFIG["datasets"]:
@@ -1200,4 +1071,4 @@ if __name__ == "__main__":
     finally:
         anti.stop()
 
-    print("\nAll datasets finished.")
+    print("\n All datasets finished training!")
