@@ -45,7 +45,6 @@ from torch.utils.data import Dataset, DataLoader
 CONFIG = {
     # Patch sampling strategy
     "cell_patch_ratio": 0.75,                  # 75% of patches centered on nuclei
-    "background_penalty_strength": 0.8,        # (reserved for future use)
 
     # Pretraining (transfer learning from All_Great model)
     "load_pretrained": True,
