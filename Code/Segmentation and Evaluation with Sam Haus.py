@@ -58,7 +58,7 @@ CONFIG = {
     # Where results will be saved
     "output_csv_dir": r"S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Final Model/Results Fake Images",
 
-    # 🔥 FIXED THRESHOLD (change this to test different operating points)
+    #FIXED THRESHOLD (change this to test different operating points)
     "threshold": 0.05,
 
     # Sliding-window inference settings (must match training)
