@@ -1,0 +1,11 @@
+Model_Training_With_Thresholding_Different.py 
+  This is the main code dedicated to training the models and seeing what will happen 
+
+Segmentation and Evaluation with Sam Haus.py 
+  This is the file that was used for all the statistical analysis that needed to be done to compare the models to one another
+
+Mod_Image_Gen.py
+  This was the file that was used to apply the PSF to the raw data set images 
+
+Fake_Objective.py and Figure_Generation.py 
+  These were just used for generating figures that were shown in my report or presentation
