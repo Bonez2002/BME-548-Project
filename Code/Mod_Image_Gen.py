@@ -9,6 +9,15 @@ This script does TWO things:
 
 2. Applies each PSF to EVERY 3D image in a source folder using fast FFT convolution.
 
+CHANGES MADE (per your request):
+- Normalization now happens FIRST on the clean input image:
+  → Min-max normalization across the WHOLE 3D volume (global min & max)
+  → This brings every image to [0, 1] range before blurring
+- PSF convolution is then applied to the normalized image
+- Final scaling to 16-bit (0–65535) is done directly on the blurred result
+  (no re-stretching based on blurred max). This preserves the realistic
+  peak-intensity loss caused by the PSF (spherical aberration, depth, etc.).
+
 Result:
 - Clean PSF .tif files (for inspection or later use)
 - A set of blurred ("realistic") image folders, one per objective:
@@ -17,7 +26,7 @@ Result:
     Poor_Objective/
 
 Perfect for creating synthetic training data that matches your actual microscope’s
-optical imperfections (spherical aberration, pinhole size, depth, etc.).
+optical imperfections.
 """
 
 import os
@@ -33,14 +42,13 @@ from scipy.signal import fftconvolve   # Fast 3D convolution
 # ==========================================================
 
 # Toggle interactive display and saving
-SHOW_PSF = False
 SAVE_PSF = True
 
 # Base output folder
-OUTPUT_FOLDER = "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Fake_Objective"
+OUTPUT_FOLDER = "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Images_Mod/dataset-all/images"
 
 # >>> SOURCE FOLDER CONTAINING CLEAN 3D IMAGES TO BE BLURRED
-INPUT_IMAGE_FOLDER = "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Dataset_All"
+INPUT_IMAGE_FOLDER = "S:/Lab Data/Python 3.14.2/Machine Learning and Imaging/Images/dataset-all/images"
 
 # Hoechst 33342 wavelengths (microns)
 EXCITATION_WAVELENGTH_UM = 0.405
@@ -169,9 +177,9 @@ def apply_psf_to_image(image, psf):
     Parameters
     ----------
     image : np.ndarray
-        Shape (Z, Y, X) or (Z, Y, X, C) — but we assume single channel
+        Shape (Z, Y, X) — normalized to [0, 1]
     psf   : np.ndarray
-        3D PSF of shape (Z_psf, Y_psf, X_psf)
+        3D PSF of shape (Z_psf, Y_psf, X_psf) normalized to sum = 1
 
     Returns
     -------
@@ -186,6 +194,12 @@ def process_image_folder(psf_dict):
     """
     For each objective, create a subfolder and apply its PSF to every .tif
     in INPUT_IMAGE_FOLDER.
+    
+    NEW BEHAVIOR:
+      1. Min-max normalize the WHOLE 3D image to [0, 1]
+      2. Apply PSF convolution
+      3. Scale result directly to uint16 (0–65535)
+         → Peak intensity loss from blurring is preserved (realistic)
     """
     # Get all TIFF files in the source folder
     image_files = [f for f in os.listdir(INPUT_IMAGE_FOLDER) if f.lower().endswith(".tif")]
@@ -206,14 +220,23 @@ def process_image_folder(psf_dict):
 
             print(f"   → Processing {fname}  (shape: {img.shape})")
 
-            # Apply the PSF
-            blurred = apply_psf_to_image(img, psf)
+            # ===================== NEW NORMALIZATION (WHOLE 3D VOLUME) =====================
+            img_min = img.min()
+            img_max = img.max()
+            if img_max > img_min + 1e-8:          # avoid division by zero
+                img_norm = (img - img_min) / (img_max - img_min)
+            else:
+                img_norm = np.zeros_like(img, dtype=np.float32)
 
-            # Simple normalization to 16-bit range (preserves relative intensities)
-            blurred -= blurred.min()
-            if blurred.max() > 0:
-                blurred /= blurred.max()
-            blurred = (blurred * 65535).astype(np.uint16)
+            # ===================== APPLY PSF AFTER NORMALIZATION =====================
+            blurred = apply_psf_to_image(img_norm, psf)
+
+            # Remove any tiny negative values from FFT numerical precision
+            blurred = np.clip(blurred, 0.0, None)
+
+            # Scale normalized blurred result directly to 16-bit
+            # (peak reduction from PSF is preserved — no re-stretching)
+            blurred = (blurred * 65535.0).astype(np.uint16)
 
             # Save blurred version with same filename
             save_path = os.path.join(obj_output_dir, fname)
